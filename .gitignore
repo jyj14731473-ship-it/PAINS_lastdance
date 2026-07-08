@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Raw/cached baseball data can be large and reproducible.
+data/*
+!data/.gitkeep
+
+# Keep the CSV experiment ledger, ignore binary/model/plot run artifacts.
+experiments/runs/*
+!experiments/runs/.gitkeep
+
+*.joblib
+*.pkl
+*.parquet
+*.feather
+*.png
+*.svg
