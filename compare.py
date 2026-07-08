@@ -7,6 +7,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(os.cpu_count() or 1))
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -22,7 +23,7 @@ from lib.evaluate import (
     save_metric_bar_chart,
 )
 from lib.labeling import create_labels
-from lib.split import rolling_origin_split
+from lib.split import monthly_train_test_split, rolling_origin_split
 
 
 # %%
@@ -36,13 +37,57 @@ def _load_module(path: Path):
 
 
 # %%
-def discover_model_modules(models_dir: str | Path = "models"):
+def discover_model_modules(models_dir: str | Path = "models", model_names: list[str] | None = None):
     paths = sorted(Path(models_dir).glob("model_*.py"))
+    if model_names:
+        requested = {name if name.startswith("model_") else f"model_{name}" for name in model_names}
+        paths = [path for path in paths if path.stem in requested]
+        missing = sorted(requested - {path.stem for path in paths})
+        if missing:
+            raise ValueError(f"Requested model files not found: {missing}")
     return [_load_module(path) for path in paths]
 
 
 # %%
-def load_or_prepare_data(input_path: str | Path | None, demo: bool) -> pd.DataFrame:
+def _json_ready(value: Any):
+    if pd.isna(value):
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
+# %%
+def save_dataframe_artifacts(df: pd.DataFrame, output_dir: str | Path, name: str, preview_rows: int = 200) -> None:
+    """Save a full table, a human-readable preview, and a compact schema summary."""
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(output / f"{name}.parquet", index=False)
+    df.head(preview_rows).to_csv(output / f"{name}_preview.csv", index=False, encoding="utf-8-sig")
+
+    summary = {
+        "name": name,
+        "rows": int(len(df)),
+        "columns": list(df.columns),
+        "dtypes": {column: str(dtype) for column, dtype in df.dtypes.items()},
+        "null_counts": {column: int(value) for column, value in df.isna().sum().items()},
+        "preview_rows": [
+            {column: _json_ready(value) for column, value in row.items()}
+            for row in df.head(5).to_dict(orient="records")
+        ],
+    }
+    (output / f"{name}_summary.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+# %%
+def load_or_prepare_data(
+    input_path: str | Path | None,
+    demo: bool,
+    intermediate_dir: str | Path | None = None,
+) -> pd.DataFrame:
     if demo:
         raw = make_demo_outings()
     elif input_path is None:
@@ -56,16 +101,54 @@ def load_or_prepare_data(input_path: str | Path | None, demo: bool) -> pd.DataFr
         else:
             raise ValueError(f"Unsupported input format: {path.suffix}")
 
+    if intermediate_dir is not None:
+        save_dataframe_artifacts(raw, intermediate_dir, "01_input_outings")
+
     if "target_y" in raw.columns:
         return raw
     features = prepare_features(raw)
+    if intermediate_dir is not None:
+        save_dataframe_artifacts(features, intermediate_dir, "02_features")
+        feature_profile = {
+            "rows": int(len(features)),
+            "date_min": _json_ready(features["game_date"].min()) if "game_date" in features else None,
+            "date_max": _json_ready(features["game_date"].max()) if "game_date" in features else None,
+            "pitchers": int(features["pitcher"].nunique()) if "pitcher" in features else None,
+            "feature_columns": list(features.columns),
+        }
+        (Path(intermediate_dir) / "02_features_profile.json").write_text(
+            json.dumps(feature_profile, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
     return create_labels(features)
 
 
 # %%
-def run_comparison(df: pd.DataFrame, run_id: str, output_dir: Path) -> pd.DataFrame:
-    split = rolling_origin_split(df)
-    modules = discover_model_modules()
+def run_comparison(
+    df: pd.DataFrame,
+    run_id: str,
+    output_dir: Path,
+    intermediate_dir: str | Path | None = None,
+    split_strategy: str = "rolling-origin",
+    monthly_train_fraction: float = 0.80,
+    model_names: list[str] | None = None,
+) -> pd.DataFrame:
+    if intermediate_dir is not None:
+        save_dataframe_artifacts(df, intermediate_dir, "03_labeled")
+
+    if split_strategy == "monthly":
+        split = monthly_train_test_split(df, train_fraction=monthly_train_fraction)
+    elif split_strategy == "rolling-origin":
+        split = rolling_origin_split(df)
+    else:
+        raise ValueError(f"Unsupported split strategy: {split_strategy}")
+
+    if intermediate_dir is not None:
+        save_dataframe_artifacts(split.train_df, intermediate_dir, "04_train_split")
+        save_dataframe_artifacts(split.validation_df, intermediate_dir, "05_validation_embargo_split")
+        save_dataframe_artifacts(split.test_df, intermediate_dir, "06_test_split")
+
+    modules = discover_model_modules(model_names=model_names)
     if not modules:
         raise RuntimeError("No models/model_*.py files found.")
 
@@ -99,7 +182,9 @@ def run_comparison(df: pd.DataFrame, run_id: str, output_dir: Path) -> pd.DataFr
         "n_train": len(split.train_df),
         "n_validation_embargo": len(split.validation_df),
         "n_test": len(split.test_df),
-        "test_start": split.test_start.isoformat(),
+        "test_start": _json_ready(split.test_start),
+        "split_strategy": split.strategy,
+        "split_metadata": split.metadata or {},
         "caveat": (
             "Correlation, not causation: manager usage decisions and selection bias can "
             "affect both workload and performance."
@@ -117,14 +202,48 @@ def main() -> None:
     parser.add_argument("--demo", action="store_true", help="Run on synthetic data.")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument(
+        "--models",
+        default=None,
+        help="Comma-separated model stems to run, e.g. baseline_standard_abuse_ridge,xgboost.",
+    )
+    parser.add_argument(
+        "--split",
+        choices=["rolling-origin", "monthly"],
+        default="rolling-origin",
+        help="Train/test split strategy.",
+    )
+    parser.add_argument(
+        "--monthly-train-fraction",
+        type=float,
+        default=0.80,
+        help="Train fraction used by --split monthly.",
+    )
+    parser.add_argument(
+        "--save-intermediate",
+        action="store_true",
+        help="Write input/features/labels/splits under output-dir/intermediate.",
+    )
     args = parser.parse_args()
 
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = args.output_dir or Path("experiments") / "runs" / run_id
-    df = load_or_prepare_data(args.input, args.demo)
-    metrics = run_comparison(df, run_id, output_dir)
+    intermediate_dir = output_dir / "intermediate" if args.save_intermediate else None
+    df = load_or_prepare_data(args.input, args.demo, intermediate_dir)
+    model_names = [name.strip() for name in args.models.split(",") if name.strip()] if args.models else None
+    metrics = run_comparison(
+        df,
+        run_id,
+        output_dir,
+        intermediate_dir,
+        args.split,
+        args.monthly_train_fraction,
+        model_names,
+    )
     print(metrics.to_string(index=False))
     print(f"Artifacts: {output_dir}")
+    if intermediate_dir is not None:
+        print(f"Intermediate artifacts: {intermediate_dir}")
 
 
 # %%

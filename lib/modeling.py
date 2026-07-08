@@ -18,25 +18,79 @@ DEFAULT_FEATURE_COLUMNS = [
     "rest_days",
     "back_to_back",
     "age",
-    "day_of_season",
+    "standard_abuse_prev1",
+    "standard_abuse_sum_3d",
+    "standard_abuse_sum_7d",
+    "standard_abuse_sum_14d",
+    "standard_abuse_sum_28d",
+    "standard_abuse_mean_last3",
+    "standard_abuse_mean_last5",
+    "standard_abuse_max_7d",
+    "standard_abuse_acute_7d",
+    "standard_abuse_chronic_28d",
+    "standard_abuse_acwr",
+    "standard_abuse_high_count_7d",
+    "standard_abuse_streak_prior",
     "release_speed_ma5",
     "release_speed_slope5",
     "release_speed_z",
+    "effective_speed_ma5",
+    "effective_speed_slope5",
+    "effective_speed_z",
     "release_spin_rate_ma5",
     "release_spin_rate_slope5",
     "release_spin_rate_z",
+    "release_extension_ma5",
+    "release_extension_slope5",
+    "release_extension_z",
+    "release_pos_x_ma5",
+    "release_pos_x_slope5",
+    "release_pos_x_z",
+    "release_pos_y_ma5",
+    "release_pos_y_slope5",
+    "release_pos_y_z",
+    "release_pos_z_ma5",
+    "release_pos_z_slope5",
+    "release_pos_z_z",
     "arm_angle_ma5",
     "arm_angle_slope5",
     "arm_angle_z",
     "spin_axis_ma5",
     "spin_axis_slope5",
     "spin_axis_z",
-    "opponent_batter_prior_xwOBA",
-    "same_hand_ratio",
-    "lefty_batter_ratio",
-    "cluster_id",
+    "pfx_x_ma5",
+    "pfx_x_slope5",
+    "pfx_x_z",
+    "pfx_z_ma5",
+    "pfx_z_slope5",
+    "pfx_z_z",
+    "plate_x_ma5",
+    "plate_x_slope5",
+    "plate_x_z",
+    "plate_z_ma5",
+    "plate_z_slope5",
+    "plate_z_z",
+    "zone_ma5",
+    "zone_slope5",
+    "zone_z",
+    "api_break_z_with_gravity_ma5",
+    "api_break_z_with_gravity_slope5",
+    "api_break_z_with_gravity_z",
+    "api_break_x_arm_ma5",
+    "api_break_x_arm_slope5",
+    "api_break_x_arm_z",
     "role",
 ]
+
+
+# %%
+def _dynamic_default_features(df: pd.DataFrame) -> list[str]:
+    dynamic = [
+        col
+        for col in df.columns
+        if col.startswith("pitch_mix_") and (col.endswith("_ma5") or col.endswith("_slope5") or col.endswith("_z"))
+    ]
+    return DEFAULT_FEATURE_COLUMNS + sorted(dynamic)
 
 
 # %%
@@ -65,7 +119,7 @@ def available_features(
     exclude: Iterable[str] | None = None,
 ) -> list[str]:
     """Return requested model features that exist in df."""
-    requested = list(requested or DEFAULT_FEATURE_COLUMNS)
+    requested = list(requested) if requested is not None else _dynamic_default_features(df)
     exclude_set = set(exclude or [])
     return [col for col in requested if col in df.columns and col not in exclude_set]
 

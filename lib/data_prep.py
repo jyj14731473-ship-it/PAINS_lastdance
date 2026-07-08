@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from lib.sanity_checks import run_feature_sanity_checks
+from lib.workload_index import add_custom_abuse_features, add_standard_abuse_features
 
 
 DEFAULT_CONFIG = {
@@ -16,10 +17,29 @@ DEFAULT_CONFIG = {
     "first_rest_days": 7,
     "cluster_count": 6,
     "random_state": 42,
+    "standard_abuse_high_threshold": 75.0,
+    "custom_abuse_high_threshold": 75.0,
     "strict_sanity": False,
 }
 
-TRACKING_COLUMNS = ["release_speed", "release_spin_rate", "arm_angle", "spin_axis"]
+TRACKING_COLUMNS = [
+    "release_speed",
+    "effective_speed",
+    "release_spin_rate",
+    "release_extension",
+    "release_pos_x",
+    "release_pos_y",
+    "release_pos_z",
+    "arm_angle",
+    "spin_axis",
+    "pfx_x",
+    "pfx_z",
+    "plate_x",
+    "plate_z",
+    "zone",
+    "api_break_z_with_gravity",
+    "api_break_x_arm",
+]
 
 
 # %%
@@ -222,6 +242,8 @@ def prepare_features(outings_df: pd.DataFrame, config: dict | None = None, run_c
     acute_rate = acute_sum / float(config["acute_days"])
     chronic_rate = chronic_sum / float(config["chronic_days"])
     df["ACWR"] = (acute_rate / chronic_rate.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
+    df = add_standard_abuse_features(df, config)
+    df = add_custom_abuse_features(df, config)
 
     if "age" not in df.columns:
         df["age"] = np.nan

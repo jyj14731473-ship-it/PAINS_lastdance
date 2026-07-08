@@ -60,13 +60,44 @@ def build_outings(pitches: pd.DataFrame, player_bio: pd.DataFrame | None = None)
     agg_spec = {
         "pitch_count": ("pitcher", "size"),
         "release_speed": ("release_speed", "mean"),
+        "effective_speed": ("effective_speed", "mean"),
         "release_spin_rate": ("release_spin_rate", "mean"),
+        "release_extension": ("release_extension", "mean"),
+        "release_pos_x": ("release_pos_x", "mean"),
+        "release_pos_y": ("release_pos_y", "mean"),
+        "release_pos_z": ("release_pos_z", "mean"),
         "arm_angle": ("arm_angle", "mean"),
         "spin_axis": ("spin_axis", "mean"),
+        "pfx_x": ("pfx_x", "mean"),
+        "pfx_z": ("pfx_z", "mean"),
+        "plate_x": ("plate_x", "mean"),
+        "plate_z": ("plate_z", "mean"),
+        "zone": ("zone", "mean"),
+        "api_break_z_with_gravity": ("api_break_z_with_gravity", "mean"),
+        "api_break_x_arm": ("api_break_x_arm", "mean"),
         "estimated_woba_using_speedangle_mean": ("estimated_woba_using_speedangle", "mean"),
+        "woba_value_mean": ("woba_value", "mean"),
+        "pitching_team": ("pitching_team", "first"),
     }
     existing_agg = {name: spec for name, spec in agg_spec.items() if spec[0] in df.columns}
     outings = df.groupby(keys, as_index=False).agg(**existing_agg)
+
+    if "estimated_woba_using_speedangle_mean" in outings.columns and "woba_value_mean" in outings.columns:
+        outings["outing_xwOBA"] = outings["estimated_woba_using_speedangle_mean"].fillna(outings["woba_value_mean"])
+    elif "estimated_woba_using_speedangle_mean" in outings.columns:
+        outings["outing_xwOBA"] = outings["estimated_woba_using_speedangle_mean"]
+    elif "woba_value_mean" in outings.columns:
+        outings["outing_xwOBA"] = outings["woba_value_mean"]
+
+    if "inning" in df.columns:
+        inning_df = df.copy()
+        inning_df["inning"] = pd.to_numeric(inning_df["inning"], errors="coerce")
+        inning_meta = inning_df.groupby(keys, as_index=False).agg(
+            first_inning=("inning", "min"),
+            last_inning=("inning", "max"),
+        )
+        outings = outings.merge(inning_meta, on=keys, how="left")
+        outings["is_starting_pitcher"] = (outings["first_inning"] <= 1).fillna(False).astype(int)
 
     bf = df.groupby(keys).apply(_batters_faced, include_groups=False).rename("BF").reset_index()
     outings = outings.merge(bf, on=keys, how="left")
@@ -112,10 +143,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build outing-level data from Statcast pitch data.")
     parser.add_argument("--input-dir", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--relief-only", action="store_true", help="Drop outings that started in inning 1.")
     args = parser.parse_args()
 
     pitches = _read_many(args.input_dir)
     outings = build_outings(pitches)
+    if args.relief_only:
+        if "is_starting_pitcher" not in outings.columns:
+            raise ValueError("Cannot apply --relief-only because input rows do not include inning.")
+        outings = outings.loc[outings["is_starting_pitcher"] != 1].copy()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     outings.to_parquet(args.output, index=False)
     print(f"Wrote {len(outings):,} outings to {args.output}")
