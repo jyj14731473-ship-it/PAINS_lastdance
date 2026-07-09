@@ -16,14 +16,11 @@ import pandas as pd
 
 from lib.data_prep import prepare_features
 from lib.demo_data import make_demo_outings
-from lib.evaluate import (
-    acwr_residual_summary,
-    log_experiment,
-    save_acwr_boxplot,
-    save_metric_bar_chart,
-)
+from lib.evaluate import log_experiment
 from lib.labeling import create_labels
 from lib.split import monthly_train_test_split, rolling_origin_split
+
+BASELINE_MODEL_NAMES = ["model_classification_residual_tertile_xgboost"]
 
 
 # %%
@@ -39,6 +36,8 @@ def _load_module(path: Path):
 # %%
 def discover_model_modules(models_dir: str | Path = "models", model_names: list[str] | None = None):
     paths = sorted(Path(models_dir).glob("model_*.py"))
+    if model_names is None:
+        model_names = BASELINE_MODEL_NAMES
     if model_names:
         requested = {name if name.startswith("model_") else f"model_{name}" for name in model_names}
         paths = [path for path in paths if path.stem in requested]
@@ -83,10 +82,113 @@ def save_dataframe_artifacts(df: pd.DataFrame, output_dir: str | Path, name: str
 
 
 # %%
+def save_prediction_artifact(test_df: pd.DataFrame, result: dict, output_dir: str | Path) -> None:
+    """Save per-row predictions for later decision review."""
+    metadata_columns = [
+        "game_date",
+        "game_pk",
+        "team",
+        "home_team",
+        "away_team",
+        "opponent",
+        "pitcher",
+        "pitcher_name",
+        "player_name",
+        "BF",
+        "IP",
+        "target_y",
+        "residual",
+        "shrunk_xwOBA",
+        "outing_xwOBA",
+        "baseline_skill",
+    ]
+    keep_columns = [column for column in metadata_columns if column in test_df.columns]
+    predictions = pd.DataFrame(index=test_df.index)
+    if keep_columns:
+        predictions = test_df.loc[:, keep_columns].copy()
+
+    task = result.get("task", "classification")
+    raw_predictions = result.get("predictions")
+    if raw_predictions is not None:
+        if task == "classification":
+            thresholds = result.get("config", {}).get("residual_class_thresholds", {})
+            low_cut = thresholds.get("low_cut")
+            high_cut = thresholds.get("high_cut")
+            if "residual" in predictions.columns and low_cut is not None and high_cut is not None:
+                residual = pd.to_numeric(predictions["residual"], errors="coerce")
+                predictions["actual_class"] = 1
+                predictions.loc[residual <= float(low_cut), "actual_class"] = 0
+                predictions.loc[residual >= float(high_cut), "actual_class"] = 2
+                predictions["actual_label"] = predictions["actual_class"].map(
+                    {0: "하/risk", 1: "중/normal", 2: "상/good"}
+                )
+            predictions["predicted_class"] = raw_predictions
+            predictions["predicted_label"] = predictions["predicted_class"].map(
+                {0: "하/risk", 1: "중/normal", 2: "상/good"}
+            )
+        else:
+            predictions["prediction"] = raw_predictions
+
+    proba = result.get("predicted_proba")
+    if proba is not None:
+        proba_df = pd.DataFrame(
+            proba,
+            columns=["proba_risk", "proba_normal", "proba_good"][: proba.shape[1]],
+            index=test_df.index,
+        )
+        predictions = pd.concat([predictions, proba_df], axis=1)
+
+    safe_name = "".join(
+        char if char.isalnum() or char in "-_." else "_"
+        for char in str(result.get("model_name", "model"))
+    )
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    predictions.to_csv(Path(output_dir) / f"predictions_{safe_name}.csv", index=False, encoding="utf-8-sig")
+
+
+# %%
+def filter_pitcher_sample(
+    df: pd.DataFrame,
+    min_outings: int = 0,
+    min_bf: int = 0,
+    min_ip: float = 0,
+    pitcher_col: str = "pitcher",
+) -> pd.DataFrame:
+    """Keep pitchers with enough total sample for player-level workload baselines."""
+    if min_outings <= 0 and min_bf <= 0 and min_ip <= 0:
+        return df
+    if pitcher_col not in df.columns:
+        raise ValueError(f"Cannot filter pitcher sample; missing column: {pitcher_col}")
+
+    grouped = df.groupby(pitcher_col)
+    summary = grouped.size().rename("outing_count").to_frame()
+    if "BF" in df.columns:
+        summary["bf_total"] = grouped["BF"].sum(min_count=1).fillna(0)
+    else:
+        summary["bf_total"] = 0
+    if "IP" in df.columns:
+        summary["ip_total"] = grouped["IP"].sum(min_count=1).fillna(0)
+    elif "outs_recorded" in df.columns:
+        summary["ip_total"] = grouped["outs_recorded"].sum(min_count=1).fillna(0) / 3.0
+    else:
+        summary["ip_total"] = 0
+
+    keep = summary.index[
+        (summary["outing_count"] >= int(min_outings))
+        & (summary["bf_total"] >= int(min_bf))
+        & (summary["ip_total"] >= float(min_ip))
+    ]
+    return df.loc[df[pitcher_col].isin(keep)].copy()
+
+
+# %%
 def load_or_prepare_data(
     input_path: str | Path | None,
     demo: bool,
     intermediate_dir: str | Path | None = None,
+    min_pitcher_outings: int = 0,
+    min_pitcher_bf: int = 0,
+    min_pitcher_ip: float = 0,
 ) -> pd.DataFrame:
     if demo:
         raw = make_demo_outings()
@@ -101,26 +203,34 @@ def load_or_prepare_data(
         else:
             raise ValueError(f"Unsupported input format: {path.suffix}")
 
+    raw = filter_pitcher_sample(raw, min_pitcher_outings, min_pitcher_bf, min_pitcher_ip)
+
     if intermediate_dir is not None:
         save_dataframe_artifacts(raw, intermediate_dir, "01_input_outings")
 
     if "target_y" in raw.columns:
-        return raw
-    features = prepare_features(raw)
+        labeled = raw
+    else:
+        features = prepare_features(raw)
+        if intermediate_dir is not None:
+            save_dataframe_artifacts(features, intermediate_dir, "02_features")
+            feature_profile = {
+                "rows": int(len(features)),
+                "date_min": _json_ready(features["game_date"].min()) if "game_date" in features else None,
+                "date_max": _json_ready(features["game_date"].max()) if "game_date" in features else None,
+                "pitchers": int(features["pitcher"].nunique()) if "pitcher" in features else None,
+                "feature_columns": list(features.columns),
+            }
+            (Path(intermediate_dir) / "02_features_profile.json").write_text(
+                json.dumps(feature_profile, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        labeled = create_labels(features)
+
+    labeled = labeled.loc[pd.to_numeric(labeled["target_y"], errors="coerce").notna()].copy()
     if intermediate_dir is not None:
-        save_dataframe_artifacts(features, intermediate_dir, "02_features")
-        feature_profile = {
-            "rows": int(len(features)),
-            "date_min": _json_ready(features["game_date"].min()) if "game_date" in features else None,
-            "date_max": _json_ready(features["game_date"].max()) if "game_date" in features else None,
-            "pitchers": int(features["pitcher"].nunique()) if "pitcher" in features else None,
-            "feature_columns": list(features.columns),
-        }
-        (Path(intermediate_dir) / "02_features_profile.json").write_text(
-            json.dumps(feature_profile, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-    return create_labels(features)
+        save_dataframe_artifacts(labeled, intermediate_dir, "03_labeled_nonnull")
+    return labeled
 
 
 # %%
@@ -153,29 +263,32 @@ def run_comparison(
         raise RuntimeError("No models/model_*.py files found.")
 
     results = []
-    acwr_summaries = {}
     for module in modules:
         if not hasattr(module, "run"):
             continue
         result = module.run({}, split.train_df, split.test_df)
         results.append(result)
         log_experiment(result, run_id, len(split.train_df), len(split.test_df))
-        acwr_summaries[result["model_name"]] = acwr_residual_summary(split.test_df, result["predictions"])
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    for result in results:
+        save_prediction_artifact(split.test_df, result, output_dir)
+
     metrics = pd.DataFrame(
         [
             {
                 "model_name": result["model_name"],
+                "task": result.get("task", "classification"),
+                "target_col": result.get("target_col", "residual_class"),
                 **result["metrics"],
                 "git_commit": result.get("git_commit", ""),
             }
             for result in results
         ]
-    ).sort_values("rmse")
+    )
+    if "macro_f1" in metrics.columns and metrics["macro_f1"].notna().any():
+        metrics = metrics.sort_values("macro_f1", ascending=False, na_position="last")
     metrics.to_csv(output_dir / "comparison_metrics.csv", index=False)
-    save_metric_bar_chart(results, output_dir / "metrics_bar.png")
-    save_acwr_boxplot(acwr_summaries, output_dir / "acwr_residuals.png")
 
     report = {
         "run_id": run_id,
@@ -205,7 +318,10 @@ def main() -> None:
     parser.add_argument(
         "--models",
         default=None,
-        help="Comma-separated model stems to run, e.g. baseline_standard_abuse_ridge,xgboost.",
+        help=(
+            "Comma-separated classification model stems to run. "
+            "Default: classification_residual_tertile_xgboost."
+        ),
     )
     parser.add_argument(
         "--split",
@@ -224,12 +340,37 @@ def main() -> None:
         action="store_true",
         help="Write input/features/labels/splits under output-dir/intermediate.",
     )
+    parser.add_argument(
+        "--min-pitcher-outings",
+        type=int,
+        default=0,
+        help="Keep only pitchers with at least this many rows before feature preparation.",
+    )
+    parser.add_argument(
+        "--min-pitcher-bf",
+        type=int,
+        default=0,
+        help="Keep only pitchers with at least this many total batters faced before feature preparation.",
+    )
+    parser.add_argument(
+        "--min-pitcher-ip",
+        type=float,
+        default=0,
+        help="Keep only pitchers with at least this many total innings pitched before feature preparation.",
+    )
     args = parser.parse_args()
 
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = args.output_dir or Path("experiments") / "runs" / run_id
     intermediate_dir = output_dir / "intermediate" if args.save_intermediate else None
-    df = load_or_prepare_data(args.input, args.demo, intermediate_dir)
+    df = load_or_prepare_data(
+        args.input,
+        args.demo,
+        intermediate_dir,
+        args.min_pitcher_outings,
+        args.min_pitcher_bf,
+        args.min_pitcher_ip,
+    )
     model_names = [name.strip() for name in args.models.split(",") if name.strip()] if args.models else None
     metrics = run_comparison(
         df,

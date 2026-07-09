@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -159,57 +158,6 @@ def make_design_matrices(
     test_encoded = encoded.xs("test").astype(float)
     return train_encoded.to_numpy(), test_encoded.to_numpy(), list(train_encoded.columns)
 
-
-# %%
-@dataclass
-class NumpyRidgeRegressor:
-    """Small dependency-free weighted ridge fallback."""
-
-    alpha: float = 1.0
-    coef_: np.ndarray | None = None
-
-    def fit(self, x: np.ndarray, y: np.ndarray, sample_weight: np.ndarray | None = None):
-        x = np.asarray(x, dtype=float)
-        y = np.asarray(y, dtype=float)
-        x_design = np.column_stack([np.ones(len(x)), x])
-        if sample_weight is None:
-            w = np.ones(len(x_design))
-        else:
-            w = np.asarray(sample_weight, dtype=float)
-            w = np.where(np.isfinite(w) & (w > 0), w, 1.0)
-        xw = x_design * np.sqrt(w)[:, None]
-        yw = y * np.sqrt(w)
-        penalty = np.eye(x_design.shape[1]) * self.alpha
-        penalty[0, 0] = 0.0
-        self.coef_ = np.linalg.pinv(xw.T @ xw + penalty) @ xw.T @ yw
-        return self
-
-    def predict(self, x: np.ndarray) -> np.ndarray:
-        if self.coef_ is None:
-            raise RuntimeError("Model is not fitted.")
-        x_design = np.column_stack([np.ones(len(x)), np.asarray(x, dtype=float)])
-        return x_design @ self.coef_
-
-
-# %%
-@dataclass
-class WeightedMeanRegressor:
-    """Constant baseline fallback."""
-
-    value_: float = 0.5
-
-    def fit(self, x: np.ndarray, y: np.ndarray, sample_weight: np.ndarray | None = None):
-        y = np.asarray(y, dtype=float)
-        if sample_weight is None:
-            self.value_ = float(np.nanmean(y))
-        else:
-            w = np.asarray(sample_weight, dtype=float)
-            mask = np.isfinite(y) & np.isfinite(w) & (w > 0)
-            self.value_ = float(np.average(y[mask], weights=w[mask])) if mask.any() else float(np.nanmean(y))
-        return self
-
-    def predict(self, x: np.ndarray) -> np.ndarray:
-        return np.full(len(x), self.value_, dtype=float)
 
 
 # %%

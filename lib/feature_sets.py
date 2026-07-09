@@ -86,6 +86,34 @@ CURRENT_WORKLOAD_FEATURES = [
     "back_to_back",
 ]
 
+PERSONALIZED_WORKLOAD_FEATURES = (
+    [
+        f"{name}_pitcher_z"
+        for name in CURRENT_WORKLOAD_FEATURES
+        if name != "back_to_back"
+    ]
+    + [f"{name}_pitcher_z" for name in STANDARD_ABUSE_FEATURES]
+    + ["pitcher_prior_outing_count"]
+)
+
+# PITCHER_ROLLING_FEATURES split by scale: *_z is pitcher-relative (safe to pool
+# across players), *_ma/_slope are raw units standardized on the pooled sample
+# (reflects "who this pitcher is", not "how is he doing vs. himself").
+PITCHER_ROLLING_Z_FEATURES = [name for name in PITCHER_ROLLING_FEATURES if name.endswith("_z")]
+PITCHER_ROLLING_LEVEL_FEATURES = [name for name in PITCHER_ROLLING_FEATURES if not name.endswith("_z")]
+
+PRIOR_SKILL_FEATURES = [
+    "personal_prior_xwOBA",
+    "normal_condition_count_prior",
+]
+
+PERSONALIZED_WORKLOAD_FULL_FEATURES = (
+    CURRENT_WORKLOAD_FEATURES
+    + STANDARD_ABUSE_FEATURES
+    + PERSONALIZED_WORKLOAD_FEATURES
+    + PITCHER_ROLLING_FEATURES
+)
+
 FEATURE_SETS = {
     "standard_abuse_only": STANDARD_ABUSE_FEATURES,
     "custom_abuse_only": CUSTOM_ABUSE_FEATURES,
@@ -97,6 +125,16 @@ FEATURE_SETS = {
     "custom_abuse_plus_pitcher": CUSTOM_ABUSE_FEATURES + PITCHER_ROLLING_FEATURES + ROLE_FEATURES,
     "current_workload_only": CURRENT_WORKLOAD_FEATURES,
     "collected_pitcher_max": CURRENT_WORKLOAD_FEATURES + STANDARD_ABUSE_FEATURES + PITCHER_ROLLING_FEATURES + ROLE_FEATURES,
+    # Full decision feature set: raw/pooled-scale workload and Statcast level
+    # features plus pitcher-relative z features. Role is intentionally excluded
+    # because the current outing data usually leaves it as "unknown".
+    "personalized_workload_max": PERSONALIZED_WORKLOAD_FULL_FEATURES,
+    # Backward-compatible alias for ablation scripts that used the explicit name.
+    "personalized_workload_plus_level": PERSONALIZED_WORKLOAD_FULL_FEATURES,
+    "decision_pregame_shrunk_xwoba": (
+        PRIOR_SKILL_FEATURES
+        + PERSONALIZED_WORKLOAD_FULL_FEATURES
+    ),
 }
 
 
@@ -112,11 +150,19 @@ def get_feature_set(name: str) -> list[str]:
 # %%
 def expand_feature_set(df, name: str) -> list[str]:
     features = get_feature_set(name)
-    dynamic_pitch_mix = [
-        col
-        for col in df.columns
-        if col.startswith("pitch_mix_") and (col.endswith("_ma5") or col.endswith("_slope5") or col.endswith("_z"))
-    ]
-    if name in {"standard_abuse_plus_pitcher", "custom_abuse_plus_pitcher", "collected_pitcher_max"}:
+
+    if name in {
+        "standard_abuse_plus_pitcher",
+        "custom_abuse_plus_pitcher",
+        "collected_pitcher_max",
+        "personalized_workload_max",
+        "personalized_workload_plus_level",
+        "decision_pregame_shrunk_xwoba",
+    }:
+        dynamic_pitch_mix = [
+            col
+            for col in df.columns
+            if col.startswith("pitch_mix_") and (col.endswith("_ma5") or col.endswith("_slope5") or col.endswith("_z"))
+        ]
         features = features + sorted(dynamic_pitch_mix)
     return [col for col in dict.fromkeys(features) if col in df.columns]

@@ -3,55 +3,93 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
 
 
 # %%
-def rmse(y_true, y_pred) -> float:
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
-    return float(np.sqrt(np.nanmean((y_true - y_pred) ** 2)))
+def evaluate_classification(
+    test_df: pd.DataFrame,
+    predicted_class,
+    predicted_proba=None,
+    target_col: str = "residual_class",
+    risk_class: int = 0,
+    good_class: int = 2,
+) -> dict:
+    """Compute decision-oriented metrics for residual class models."""
+    y = pd.to_numeric(test_df[target_col], errors="coerce").to_numpy(dtype=float)
+    pred = np.asarray(predicted_class, dtype=float)
+    mask = np.isfinite(y) & np.isfinite(pred)
+    y = y[mask].astype(int)
+    pred = pred[mask].astype(int)
+    if len(y) == 0:
+        return {
+            "accuracy": np.nan,
+            "balanced_accuracy": np.nan,
+            "macro_f1": np.nan,
+            "risk_precision": np.nan,
+            "risk_recall": np.nan,
+            "risk_f1": np.nan,
+        }
 
+    classes = np.array([0, 1, 2], dtype=int)
+    recalls = []
+    f1s = []
+    precisions = {}
+    class_recalls = {}
+    class_f1s = {}
+    for cls in classes:
+        tp = float(np.sum((y == cls) & (pred == cls)))
+        fp = float(np.sum((y != cls) & (pred == cls)))
+        fn = float(np.sum((y == cls) & (pred != cls)))
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2.0 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        recalls.append(recall)
+        f1s.append(f1)
+        precisions[int(cls)] = precision
+        class_recalls[int(cls)] = recall
+        class_f1s[int(cls)] = f1
 
-# %%
-def mae(y_true, y_pred) -> float:
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
-    return float(np.nanmean(np.abs(y_true - y_pred)))
+    metrics = {
+        "accuracy": float(np.mean(y == pred)),
+        "balanced_accuracy": float(np.mean(recalls)),
+        "macro_f1": float(np.mean(f1s)),
+        "risk_precision": float(precisions[risk_class]),
+        "risk_recall": float(class_recalls[risk_class]),
+        "risk_f1": float(class_f1s[risk_class]),
+        "good_precision": float(precisions[good_class]),
+        "good_recall": float(class_recalls[good_class]),
+        "risk_rate": float(np.mean(y == risk_class)),
+        "predicted_risk_rate": float(np.mean(pred == risk_class)),
+        "predicted_normal_rate": float(np.mean(pred == 1)),
+        "predicted_good_rate": float(np.mean(pred == good_class)),
+    }
 
-
-# %%
-def evaluate_predictions(test_df: pd.DataFrame, predictions, target_col: str = "target_y") -> dict:
-    """Compute common metrics for every model."""
-    pred = np.asarray(predictions, dtype=float)
-    y = test_df[target_col].to_numpy(dtype=float)
-    metrics = {"rmse": rmse(y, pred), "mae": mae(y, pred)}
-
-    if "BF" in test_df.columns:
-        low_bf = test_df["BF"].fillna(0) <= test_df["BF"].median()
-        metrics["rmse_low_bf"] = rmse(y[low_bf], pred[low_bf]) if low_bf.any() else np.nan
-    else:
-        metrics["rmse_low_bf"] = np.nan
+    if predicted_proba is not None:
+        proba = np.asarray(predicted_proba, dtype=float)[mask]
+        eps = 1e-12
+        proba = np.clip(proba, eps, 1.0)
+        proba = proba / proba.sum(axis=1, keepdims=True)
+        metrics["log_loss"] = float(-np.mean(np.log(proba[np.arange(len(y)), y])))
+        if proba.shape[1] > risk_class:
+            risk_score = proba[:, risk_class]
+            cutoff = max(1, int(np.ceil(len(y) * 0.20)))
+            top_idx = np.argsort(-risk_score)[:cutoff]
+            top_risk_rate = float(np.mean(y[top_idx] == risk_class))
+            baseline_rate = metrics["risk_rate"]
+            metrics["top20_risk_rate"] = top_risk_rate
+            metrics["top20_risk_lift"] = (
+                float(top_risk_rate / baseline_rate) if baseline_rate > 0 else np.nan
+            )
+            if "residual" in test_df.columns:
+                residual = pd.to_numeric(test_df["residual"], errors="coerce").to_numpy(dtype=float)[mask]
+                metrics["top20_risk_mean_residual"] = float(np.nanmean(residual[top_idx]))
 
     return metrics
-
-
-# %%
-def acwr_residual_summary(test_df: pd.DataFrame, predictions, target_col: str = "target_y") -> pd.DataFrame:
-    pred = np.asarray(predictions, dtype=float)
-    out = test_df[["ACWR", target_col]].copy()
-    out["prediction"] = pred
-    out["residual"] = out[target_col] - out["prediction"]
-    bins = [-np.inf, 0.8, 1.3, 1.5, np.inf]
-    labels = ["<0.8", "0.8-1.3", "1.3-1.5", ">1.5"]
-    out["ACWR_bin"] = pd.cut(out["ACWR"], bins=bins, labels=labels)
-    return out.groupby("ACWR_bin", observed=False)["residual"].describe().reset_index()
 
 
 # %%
@@ -62,19 +100,27 @@ def log_experiment(
     n_test: int,
     log_path: str | Path = "experiments/experiments_log.csv",
 ) -> None:
-    """Append one model result to the text experiment ledger."""
+    """Append one classification result to the experiment ledger."""
     path = Path(log_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     exists = path.exists() and path.stat().st_size > 0
+    metrics = result["metrics"]
     row = {
         "run_id": run_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model_name": result["model_name"],
+        "task": result.get("task", "classification"),
+        "target_col": result.get("target_col", "residual_class"),
         "git_commit": result.get("git_commit", ""),
         "config": json.dumps(result.get("config", {}), sort_keys=True, ensure_ascii=False),
-        "rmse": result["metrics"].get("rmse"),
-        "mae": result["metrics"].get("mae"),
-        "rmse_low_bf": result["metrics"].get("rmse_low_bf"),
+        "accuracy": metrics.get("accuracy"),
+        "balanced_accuracy": metrics.get("balanced_accuracy"),
+        "macro_f1": metrics.get("macro_f1"),
+        "risk_precision": metrics.get("risk_precision"),
+        "risk_recall": metrics.get("risk_recall"),
+        "risk_f1": metrics.get("risk_f1"),
+        "top20_risk_rate": metrics.get("top20_risk_rate"),
+        "top20_risk_lift": metrics.get("top20_risk_lift"),
         "n_train": n_train,
         "n_test": n_test,
     }
@@ -83,90 +129,3 @@ def log_experiment(
         if not exists:
             writer.writeheader()
         writer.writerow(row)
-
-
-# %%
-def save_metric_bar_chart(results: list[dict], output_path: str | Path) -> None:
-    """Save RMSE/MAE bar chart when matplotlib is available."""
-    try:
-        output = Path(output_path)
-        config_dir = output.parent / ".mplconfig"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        os.environ.setdefault("MPLBACKEND", "Agg")
-        os.environ.setdefault("MPLCONFIGDIR", str(config_dir))
-        import matplotlib
-
-        matplotlib.use("Agg", force=True)
-        import matplotlib.pyplot as plt
-    except Exception:
-        return
-
-    names = [r["model_name"] for r in results]
-    rmse_values = [r["metrics"]["rmse"] for r in results]
-    mae_values = [r["metrics"]["mae"] for r in results]
-    x = np.arange(len(names))
-    width = 0.36
-
-    fig, ax = plt.subplots(figsize=(9, 5))
-    ax.bar(x - width / 2, rmse_values, width, label="RMSE")
-    ax.bar(x + width / 2, mae_values, width, label="MAE")
-    ax.set_xticks(x)
-    ax.set_xticklabels(names, rotation=20, ha="right")
-    ax.set_ylim(0, max(rmse_values + mae_values) * 1.25)
-    ax.legend()
-    ax.set_title("Model Comparison")
-    fig.tight_layout()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=160)
-    plt.close(fig)
-
-
-# %%
-def save_acwr_boxplot(summary_frames: dict[str, pd.DataFrame], output_path: str | Path) -> None:
-    """Save a compact residual-by-ACWR summary plot."""
-    try:
-        output = Path(output_path)
-        config_dir = output.parent / ".mplconfig"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        os.environ.setdefault("MPLBACKEND", "Agg")
-        os.environ.setdefault("MPLCONFIGDIR", str(config_dir))
-        import matplotlib
-
-        matplotlib.use("Agg", force=True)
-        import matplotlib.pyplot as plt
-    except Exception:
-        return
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-    for name, frame in summary_frames.items():
-        if {"ACWR_bin", "mean"}.issubset(frame.columns):
-            ax.plot(frame["ACWR_bin"].astype(str), frame["mean"], marker="o", label=name)
-    ax.axhline(0, color="black", linewidth=1)
-    ax.set_ylabel("Mean residual")
-    ax.set_xlabel("ACWR bin")
-    ax.legend()
-    ax.set_title("Residual by ACWR Bin")
-    fig.tight_layout()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=160)
-    plt.close(fig)
-
-
-# %%
-def permutation_importance_shap_fallback(
-    model,
-    x: np.ndarray,
-    y: np.ndarray,
-    feature_names: Iterable[str],
-    metric=rmse,
-    random_state: int = 42,
-) -> pd.DataFrame:
-    """A small SHAP fallback: permutation importance with the same output intent."""
-    rng = np.random.default_rng(random_state)
-    baseline = metric(y, model.predict(x))
-    rows = []
-    for idx, feature in enumerate(feature_names):
-        shuffled = x.copy()
-        shuffled[:, idx] = rng.permutation(shuffled[:, idx])
-        rows.append({"feature": feature, "importance": metric(y, model.predict(shuffled)) - baseline})
-    return pd.DataFrame(rows).sort_values("importance", ascending=False)

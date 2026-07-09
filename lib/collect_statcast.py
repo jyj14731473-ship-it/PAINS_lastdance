@@ -21,6 +21,11 @@ def _date_chunks(start: str, end: str, chunk_days: int):
 # %%
 def filter_pitching_team(frame: pd.DataFrame, team: str) -> pd.DataFrame:
     """Keep pitches thrown by one MLB team from Statcast game rows."""
+    if frame.empty:
+        filtered = frame.copy()
+        filtered["pitching_team"] = team.upper()
+        return filtered
+
     required = {"home_team", "away_team", "inning_topbot"}
     missing = required - set(frame.columns)
     if missing:

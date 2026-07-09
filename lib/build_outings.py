@@ -34,6 +34,49 @@ def _batters_faced(group: pd.DataFrame) -> int:
 
 
 # %%
+OUTS_BY_EVENT = {
+    "field_out": 1,
+    "force_out": 1,
+    "fielders_choice": 1,
+    "fielders_choice_out": 1,
+    "strikeout": 1,
+    "sac_bunt": 1,
+    "sac_fly": 1,
+    "other_out": 1,
+    "caught_stealing_2b": 1,
+    "caught_stealing_3b": 1,
+    "caught_stealing_home": 1,
+    "pickoff_1b": 1,
+    "pickoff_2b": 1,
+    "pickoff_3b": 1,
+    "pickoff_caught_stealing_2b": 1,
+    "pickoff_caught_stealing_3b": 1,
+    "pickoff_caught_stealing_home": 1,
+    "grounded_into_double_play": 2,
+    "strikeout_double_play": 2,
+    "double_play": 2,
+    "sac_bunt_double_play": 2,
+    "sac_fly_double_play": 2,
+    "triple_play": 3,
+}
+
+
+# %%
+def _outs_recorded(pitches: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    if "events" not in pitches.columns:
+        return pd.DataFrame(columns=keys + ["outs_recorded", "IP"])
+    event_outs = pitches["events"].astype("string").map(OUTS_BY_EVENT).fillna(0).astype(int)
+    outs = (
+        pitches.assign(_event_outs=event_outs)
+        .groupby(keys, as_index=False)["_event_outs"]
+        .sum()
+        .rename(columns={"_event_outs": "outs_recorded"})
+    )
+    outs["IP"] = outs["outs_recorded"] / 3.0
+    return outs
+
+
+# %%
 def _pitch_mix(pitches: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     if "pitch_type" not in pitches.columns:
         return pd.DataFrame(columns=keys)
@@ -101,6 +144,10 @@ def build_outings(pitches: pd.DataFrame, player_bio: pd.DataFrame | None = None)
 
     bf = df.groupby(keys).apply(_batters_faced, include_groups=False).rename("BF").reset_index()
     outings = outings.merge(bf, on=keys, how="left")
+
+    outs = _outs_recorded(df, keys)
+    if not outs.empty:
+        outings = outings.merge(outs, on=keys, how="left")
 
     mix = _pitch_mix(df, keys)
     if not mix.empty:

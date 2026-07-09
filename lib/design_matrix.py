@@ -39,7 +39,7 @@ def build_tabular_design(
         train_col = train_col.fillna(median)
         test_col = test_col.fillna(median)
 
-        if any(col.startswith(prefix) for prefix in log1p_prefixes):
+        if any(col.startswith(prefix) for prefix in log1p_prefixes) and not col.endswith("_pitcher_z"):
             train_col = np.log1p(train_col.clip(lower=0.0))
             test_col = np.log1p(test_col.clip(lower=0.0))
 
