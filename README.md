@@ -23,6 +23,8 @@ models/
   model_xgboost.py
   model_gam_raw.py
   model_gam_acwr.py
+  model_form_momentum_ewm.py    # 과거 target_y 최근폼 EWM 앙상블 (현재 최고 성능)
+  model_form_momentum_blend.py  # EWM 앙상블 + 모멘텀 ridge 50/50 블렌드
 compare.py             # 모든 model_*.py 자동 실행/비교
 experiments/
   experiments_log.csv  # 실험 로그, git 추적
@@ -48,6 +50,13 @@ python -m lib.build_outings --input-dir data/statcast --output data/outings.parq
 python compare.py --input data/outings.parquet
 ```
 
+불펜만 분석하려면 `--relief-only`로 1회에 등판을 시작한 선발 등판을 제외합니다.
+
+```bash
+python -m lib.build_outings --input-dir data/statcast_lad_2025_regular --output data/outings_relief.parquet --relief-only
+python compare.py --input data/outings_relief.parquet
+```
+
 `compare.py`는 입력 데이터에 `target_y`가 없으면 `lib.data_prep.prepare_features()`와 `lib.labeling.create_labels()`를 먼저 실행합니다.
 
 ## 누수 방지 원칙
@@ -55,7 +64,21 @@ python compare.py --input data/outings.parquet
 - 워크로드, 물리 트렌드, baseline은 모두 현재 등판 이전 데이터만 사용합니다.
 - rolling/expanding 계열 계산은 현재 행을 제외합니다.
 - `outing_xwOBA`, `shrunk_xwOBA`, `baseline_skill`, `target_y` 같은 결과/라벨 계열은 모델 입력에서 제외됩니다.
+- 예외적으로 `lib/momentum_features.py`의 `prior_y_*` 피처는 **이전 등판들의** `target_y`를
+  shift(1)로만 사용합니다. 예측 시점에는 이미 끝난 등판의 결과이므로 누수가 아니며,
+  현재 등판의 라벨은 절대 피처에 들어가지 않습니다.
 - `sanity_checks.py`가 `feature_asof_date <= game_date`와 normal-condition 라벨 평균을 검사합니다.
+
+## 모델링 발견 (LAD 2025 불펜, 593 등판)
+
+- 상수 0.5 예측의 테스트 RMSE는 0.2703인데, 워크로드 피처만 쓰는 기존 모델은 전부
+  이를 넘지 못했습니다 (최고 0.2756). 워크로드 단독 상관은 train/test 간 부호가 뒤집힐
+  정도로 약합니다.
+- 반면 target_y는 선수 내 lag-1 자기상관이 약 +0.46으로, **과거 target 이력(최근 폼)**이
+  가장 강한 예측 신호입니다. 이를 사용하는 `form_momentum_ewm`이 테스트 RMSE 0.2430으로
+  기존 최고 대비 약 12% 개선했습니다.
+- 하이퍼파라미터는 train 내부 forward-chaining CV로만 선택했고, 단일 설정 선택 대신
+  (halflife, shrink_k) 그리드 평균(하이퍼파라미터 앙상블)으로 선택 분산을 줄였습니다.
 
 ## 새 방법론 추가
 
