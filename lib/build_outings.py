@@ -46,6 +46,23 @@ def _pitch_mix(pitches: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
 
 
 # %%
+def _first_pitcher_by_game(pitches: pd.DataFrame) -> pd.Series:
+    """Return the first pitcher seen chronologically for each game."""
+    if "inning" not in pitches.columns:
+        raise ValueError("Cannot identify the first pitcher because inning is missing.")
+
+    ordered = pitches.copy()
+    sort_columns = ["game_pk", "inning"]
+    ordered["inning"] = pd.to_numeric(ordered["inning"], errors="coerce")
+    for column in ["at_bat_number", "pitch_number"]:
+        if column in ordered.columns:
+            ordered[column] = pd.to_numeric(ordered[column], errors="coerce")
+            sort_columns.append(column)
+    ordered = ordered.sort_values(sort_columns, kind="stable")
+    return ordered.groupby("game_pk", sort=False)["pitcher"].first()
+
+
+# %%
 def build_outings(pitches: pd.DataFrame, player_bio: pd.DataFrame | None = None) -> pd.DataFrame:
     """Aggregate Statcast pitch-level rows into pitcher-game outings."""
     required = {"pitcher", "game_pk", "game_date"}
@@ -78,6 +95,7 @@ def build_outings(pitches: pd.DataFrame, player_bio: pd.DataFrame | None = None)
         "estimated_woba_using_speedangle_mean": ("estimated_woba_using_speedangle", "mean"),
         "woba_value_mean": ("woba_value", "mean"),
         "pitching_team": ("pitching_team", "first"),
+        "game_type": ("game_type", "first"),
     }
     existing_agg = {name: spec for name, spec in agg_spec.items() if spec[0] in df.columns}
     outings = df.groupby(keys, as_index=False).agg(**existing_agg)
@@ -97,7 +115,10 @@ def build_outings(pitches: pd.DataFrame, player_bio: pd.DataFrame | None = None)
             last_inning=("inning", "max"),
         )
         outings = outings.merge(inning_meta, on=keys, how="left")
-        outings["is_starting_pitcher"] = (outings["first_inning"] <= 1).fillna(False).astype(int)
+        first_pitchers = _first_pitcher_by_game(df)
+        outings["is_starting_pitcher"] = (
+            outings["pitcher"].eq(outings["game_pk"].map(first_pitchers))
+        ).astype(int)
 
     bf = df.groupby(keys).apply(_batters_faced, include_groups=False).rename("BF").reset_index()
     outings = outings.merge(bf, on=keys, how="left")
@@ -139,19 +160,52 @@ def build_outings(pitches: pd.DataFrame, player_bio: pd.DataFrame | None = None)
 
 
 # %%
+def filter_starter_outings(outings: pd.DataFrame, min_pitches: int = 50) -> pd.DataFrame:
+    """Keep first pitchers with enough pitches, then recompute starter-only rest."""
+    required = {"is_starting_pitcher", "pitch_count", "pitcher", "game_date", "game_pk"}
+    missing = required - set(outings.columns)
+    if missing:
+        raise ValueError(f"Cannot apply starter filter; missing columns: {sorted(missing)}")
+    if min_pitches < 1:
+        raise ValueError("min_pitches must be at least 1.")
+
+    selected = outings.loc[
+        outings["is_starting_pitcher"].eq(1)
+        & pd.to_numeric(outings["pitch_count"], errors="coerce").ge(min_pitches)
+    ].copy()
+    selected = selected.sort_values(["pitcher", "game_date", "game_pk"]).reset_index(drop=True)
+    selected["rest_days"] = selected.groupby("pitcher")["game_date"].diff().dt.days
+    return selected
+
+
+# %%
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build outing-level data from Statcast pitch data.")
     parser.add_argument("--input-dir", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--relief-only", action="store_true", help="Drop outings that started in inning 1.")
+    role_group = parser.add_mutually_exclusive_group()
+    role_group.add_argument("--relief-only", action="store_true", help="Keep non-first pitchers only.")
+    role_group.add_argument(
+        "--starter-only",
+        action="store_true",
+        help="Keep each game's first pitcher when the outing reaches --min-pitches.",
+    )
+    parser.add_argument("--min-pitches", type=int, default=50, help="Minimum pitches for --starter-only.")
+    parser.add_argument("--regular-season-only", action="store_true", help="Keep Statcast game_type R only.")
     args = parser.parse_args()
 
     pitches = _read_many(args.input_dir)
+    if args.regular_season_only:
+        if "game_type" not in pitches.columns:
+            raise ValueError("Cannot apply --regular-season-only because game_type is missing.")
+        pitches = pitches.loc[pitches["game_type"].astype("string").str.upper().eq("R")].copy()
     outings = build_outings(pitches)
     if args.relief_only:
         if "is_starting_pitcher" not in outings.columns:
             raise ValueError("Cannot apply --relief-only because input rows do not include inning.")
         outings = outings.loc[outings["is_starting_pitcher"] != 1].copy()
+    elif args.starter_only:
+        outings = filter_starter_outings(outings, min_pitches=args.min_pitches)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     outings.to_parquet(args.output, index=False)
     print(f"Wrote {len(outings):,} outings to {args.output}")
