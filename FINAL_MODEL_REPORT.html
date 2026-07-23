@@ -1,4 +1,16 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MLB 선발투수 Stuff+ 범주 예측 최종 종합 보고서</title><style>:root{--ink:#172033;--line:#d9dfe8;--accent:#174ea6}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:var(--ink);background:#eef1f5;font-family:"Pretendard","Noto Sans KR","Apple SD Gothic Neo","Segoe UI",sans-serif;line-height:1.72;word-break:keep-all}main{width:min(1060px,calc(100% - 32px));margin:32px auto;padding:56px 64px 72px;background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:0 10px 32px rgba(23,32,51,.08)}h1{margin:0 0 28px;padding-bottom:18px;border-bottom:3px solid var(--accent);font-size:2.25rem;line-height:1.25}h2{margin:48px 0 16px;padding-bottom:8px;border-bottom:1px solid var(--line);font-size:1.55rem}h3{margin:32px 0 12px;font-size:1.2rem}strong{color:#0f3d81}ul,ol{padding-left:1.5rem}table{display:block;width:100%;margin:18px 0 28px;overflow-x:auto;border-collapse:collapse;font-size:.93rem}th,td{padding:9px 12px;border:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}th{background:#edf2f8}tr:nth-child(even) td{background:#fafbfd}code{padding:.12em .35em;border-radius:4px;background:#eef2f6;font-family:"Cascadia Code",Consolas,monospace;font-size:.9em;word-break:break-all}pre{overflow:auto;padding:16px 18px;border-radius:8px;color:#eef4ff;background:#182233}pre code{padding:0;color:inherit;background:transparent}.print-button{position:fixed;top:18px;right:20px;padding:10px 15px;border:0;border-radius:999px;color:#fff;background:var(--accent);font:600 14px inherit}@media(max-width:720px){main{width:100%;margin:0;padding:30px 20px 48px;border:0;border-radius:0}.print-button{position:static;display:block;margin:12px 20px 0 auto}}@media print{body{background:#fff}main{width:auto;margin:0;padding:0;border:0;box-shadow:none}.print-button{display:none}table,pre{break-inside:avoid}}</style></head><body><button class="print-button" onclick="window.print()">인쇄 / PDF 저장</button><main><h1 id="mlb-stuff">MLB 선발투수 Stuff+ 범주 예측 최종 종합 보고서</h1>
+<style>
+.viz{margin:22px 0 32px;padding:22px;border:1px solid #d9e2ef;border-radius:14px;background:linear-gradient(145deg,#fbfdff,#f3f7fc)}
+.viz-title{margin:0 0 4px;font-size:1.05rem;font-weight:750}.viz-note{margin:0 0 18px;color:#637087;font-size:.86rem}
+.legend{display:flex;flex-wrap:wrap;gap:14px;margin:0 0 14px;font-size:.85rem}.legend span{display:flex;align-items:center;gap:6px}.swatch{width:12px;height:12px;border-radius:3px}
+.bar-row{display:grid;grid-template-columns:128px 1fr 58px;align-items:center;gap:10px;margin:10px 0;font-size:.88rem}.bar-track{height:20px;overflow:hidden;border-radius:5px;background:#e4eaf2}.bar{height:100%;border-radius:5px;background:#174ea6}.bar.ridge{background:#e05a47}.bar.ewma{background:#2f9e73}.bar.last{background:#8d6cc7}.bar.mode{background:#8b95a5}
+.bar-pair{display:grid;gap:4px}.bar-mini{height:9px;border-radius:4px}.metric-label{font-weight:650}.axis{display:flex;justify-content:space-between;margin:4px 58px 0 138px;color:#7a8597;font-size:.72rem}
+.matrix-grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:18px}.matrix{display:grid;grid-template-columns:72px repeat(3,1fr);gap:4px}.matrix div{display:flex;min-height:54px;align-items:center;justify-content:center;border-radius:7px;font-size:.88rem}.matrix .head{min-height:32px;color:#556176;background:#e8edf4;font-weight:650}.matrix .cell{color:#10253f;font-weight:700}.matrix .diag{outline:2px solid #174ea6}.matrix-caption{text-align:center;font-weight:700;margin-bottom:8px}
+.chart-scroll{overflow-x:auto}.line-chart{display:block;width:100%;min-width:680px;height:auto}.chart-grid{stroke:#dbe2ec;stroke-width:1}.chart-axis{fill:#738095;font-size:12px}.chart-label{fill:#344258;font-size:13px;font-weight:600}
+.takeaway{margin:18px 0 0;padding:12px 15px;border-left:4px solid #174ea6;border-radius:4px;background:#eaf2ff;font-size:.9rem}
+@media(max-width:720px){.viz{padding:16px}.matrix-grid{grid-template-columns:1fr}.bar-row{grid-template-columns:94px 1fr 48px}.axis{margin-left:104px;margin-right:48px}}
+@media print{.viz{break-inside:avoid;background:#fff}.bar,.bar.ridge,.bar.ewma,.bar.last,.bar.mode{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
 <ul>
 <li>작성일: 2026-07-24</li>
 <li>주 예측 모델: <code>xgboost_tpe_span4_compact_locked</code></li>
@@ -247,6 +259,20 @@ predicted_stuff = prior_EWMA4 + correction_scale × predicted_residual
 <li>최고 안정성 점수에서 0.3%p 이내면 더 단순한 설정 선택</li>
 </ol>
 <p>선택 점수는 <code>평균 균형 정확도 - 0.5 × 연도별 표준편차</code>다.</p>
+<section class="viz" aria-label="연도별 검증 균형 정확도 선 그래프">
+<p class="viz-title">연도별 검증 균형 정확도</p>
+<p class="viz-note">2025를 전혀 사용하지 않은 순차 검증. 세 모델 모두 연도 효과가 크지만 XGBoost가 가장 안정적이다.</p>
+<div class="legend"><span><i class="swatch" style="background:#174ea6"></i>XGBoost</span><span><i class="swatch" style="background:#e05a47"></i>Ridge</span><span><i class="swatch" style="background:#2f9e73"></i>EWMA4</span></div>
+<div class="chart-scroll"><svg class="line-chart" viewBox="0 0 820 320" role="img" aria-label="2022년부터 2024년까지 세 모델의 균형 정확도">
+<line class="chart-grid" x1="90" y1="45" x2="780" y2="45"/><line class="chart-grid" x1="90" y1="105" x2="780" y2="105"/><line class="chart-grid" x1="90" y1="165" x2="780" y2="165"/><line class="chart-grid" x1="90" y1="225" x2="780" y2="225"/>
+<text class="chart-axis" x="42" y="49">56%</text><text class="chart-axis" x="42" y="109">54%</text><text class="chart-axis" x="42" y="169">52%</text><text class="chart-axis" x="42" y="229">50%</text>
+<text class="chart-label" x="128" y="275">2022</text><text class="chart-label" x="408" y="275">2023</text><text class="chart-label" x="688" y="275">2024</text>
+<polyline points="145,97 425,118 705,50" fill="none" stroke="#174ea6" stroke-width="4"/><polyline points="145,123 425,136 705,52" fill="none" stroke="#e05a47" stroke-width="4"/><polyline points="145,86 425,165 705,55" fill="none" stroke="#2f9e73" stroke-width="4"/>
+<g fill="#174ea6"><circle cx="145" cy="97" r="6"/><circle cx="425" cy="118" r="6"/><circle cx="705" cy="50" r="6"/></g><g fill="#e05a47"><circle cx="145" cy="123" r="6"/><circle cx="425" cy="136" r="6"/><circle cx="705" cy="52" r="6"/></g><g fill="#2f9e73"><circle cx="145" cy="86" r="6"/><circle cx="425" cy="165" r="6"/><circle cx="705" cy="55" r="6"/></g>
+<text class="chart-axis" x="157" y="92">54.27</text><text class="chart-axis" x="437" y="113">53.57</text><text class="chart-axis" x="717" y="45">55.83</text>
+</svg></div>
+<p class="takeaway"><strong>핵심:</strong> XGBoost의 검증 평균은 54.56%, 연도별 표준편차는 0.94%p로 세 후보 중 가장 작다.</p>
+</section>
 <table>
 <thead>
 <tr>
@@ -293,6 +319,17 @@ predicted_stuff = prior_EWMA4 + correction_scale × predicted_residual
 통과했다. 동일 seed로 전체 탐색을 두 번 실행했을 때 잠금 파라미터가 완전히 같았고,
 각 실행 시간은 약 29초였다.</p>
 <h2 id="section-11">8. 2025 테스트</h2>
+<section class="viz" aria-label="2025 모델 성능 막대그래프">
+<p class="viz-title">2025 잠금 테스트 성능</p>
+<p class="viz-note">막대는 정확도 기준이며 축 범위는 0~60%. 숫자는 실제 정확도다.</p>
+<div class="bar-row"><span class="metric-label">Ridge</span><div class="bar-track"><div class="bar ridge" style="width:88.2%"></div></div><strong>52.92%</strong></div>
+<div class="bar-row"><span class="metric-label">EWMA4</span><div class="bar-track"><div class="bar ewma" style="width:87.2%"></div></div><strong>52.31%</strong></div>
+<div class="bar-row"><span class="metric-label">XGBoost</span><div class="bar-track"><div class="bar" style="width:86.2%"></div></div><strong>51.71%</strong></div>
+<div class="bar-row"><span class="metric-label">직전 Stuff+</span><div class="bar-track"><div class="bar last" style="width:83.2%"></div></div><strong>49.90%</strong></div>
+<div class="bar-row"><span class="metric-label">최빈 범주</span><div class="bar-track"><div class="bar mode" style="width:71.4%"></div></div><strong>42.86%</strong></div>
+<div class="axis"><span>0%</span><span>30%</span><span>60%</span></div>
+<p class="takeaway"><strong>핵심:</strong> Ridge, EWMA4, XGBoost의 차이는 1.21%p 이내다. 복잡한 모델의 개선 폭보다 과거 Stuff+ 지속성 자체의 기여가 더 크다.</p>
+</section>
 <table>
 <thead>
 <tr>
@@ -351,6 +388,15 @@ predicted_stuff = prior_EWMA4 + correction_scale × predicted_residual
 고정 XGBoost보다 4건을 추가로 맞혔다. 테스트 결과는 두 모델의
 설명과 비교에 사용하되, 이 결과를 근거로 하이퍼파라미터를 변경하지 않았다.</p>
 <h3 id="xgboost-1">8.1 XGBoost 혼동행렬</h3>
+<section class="viz" aria-label="두 모델 혼동행렬 히트맵">
+<p class="viz-title">범주별 예측 분포</p>
+<p class="viz-note">행은 실제 범주, 열은 예측 범주다. 파란 테두리는 정답 셀이고 색이 진할수록 등판 수가 많다.</p>
+<div class="matrix-grid">
+<div><div class="matrix-caption">XGBoost</div><div class="matrix"><div></div><div class="head">예측 Low</div><div class="head">Middle</div><div class="head">High</div><div class="head">실제 Low</div><div class="cell diag" style="background:#3d78bf;color:#fff">129</div><div class="cell" style="background:#94b8df">70</div><div class="cell" style="background:#e3edf8">14</div><div class="head">Middle</div><div class="cell" style="background:#c4d8ed">35</div><div class="cell diag" style="background:#78a4d3">87</div><div class="cell" style="background:#bad2e9">39</div><div class="head">실제 High</div><div class="cell" style="background:#dce8f5">18</div><div class="cell" style="background:#9fbee1">64</div><div class="cell diag" style="background:#b6cee8">41</div></div></div>
+<div><div class="matrix-caption">Ridge</div><div class="matrix"><div></div><div class="head">예측 Low</div><div class="head">Middle</div><div class="head">High</div><div class="head">실제 Low</div><div class="cell diag" style="background:#407bc1;color:#fff">128</div><div class="cell" style="background:#94b8df">70</div><div class="cell" style="background:#e1ecf7">15</div><div class="head">Middle</div><div class="cell" style="background:#c2d7ec">36</div><div class="cell diag" style="background:#78a4d3">87</div><div class="cell" style="background:#bdd4ea">38</div><div class="head">실제 High</div><div class="cell" style="background:#e1ecf7">15</div><div class="cell" style="background:#a8c4e3">60</div><div class="cell diag" style="background:#aec9e6">48</div></div></div>
+</div>
+<p class="takeaway"><strong>핵심:</strong> 두 모델 모두 Low는 잘 구분하지만 High 재현이 어렵다. Ridge는 실제 High 123건 중 48건을 맞혀 XGBoost보다 7건 많다.</p>
+</section>
 <table>
 <thead>
 <tr>
