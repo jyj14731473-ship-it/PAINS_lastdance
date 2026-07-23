@@ -13,26 +13,26 @@
 </style>
 <ul>
 <li>작성일: 2026-07-24</li>
-<li>주 예측 모델: <code>xgboost_tpe_span4_compact_locked</code></li>
-<li>해석 보조 모델: <code>ridge_span4_compact_alpha100_scale0.5</code></li>
+<li>주 예측 모델: XGBoost (내부 실행명: <code>xgboost_tpe_span4_compact_locked</code>)</li>
+<li>해석 보조 모델: Ridge (내부 실행명: <code>ridge_span4_compact_alpha100_scale0.5</code>)</li>
 <li>개발 데이터: 2020~2024년</li>
-<li>잠긴 테스트: 2025년</li>
+<li>최종 성능평가 데이터: 2025년</li>
 <li>분석 단위: 투수별 50구 이상 공식 선발 등판</li>
 <li>최종 평가 표본: 19명, 497등판</li>
 </ul>
 <h2 id="section">1. 요약</h2>
-<p>2025를 후보 선택에서 차단한 시간 순서 파이프라인으로 XGBoost와 Ridge 두 모델을 채택했다.
-XGBoost는 32→10→3 단계 TPE 탐색으로 잠갔고, Ridge는 Ridge 계열 검증 1위 설정을
-해석 가능한 보조 모델로 사용한다.</p>
+<p>2020~2024년 자료만으로 모델과 설정을 모두 정한 뒤, 모델 선택에 사용하지 않은
+2025년 자료로 최종 성능을 평가했다. 최종 모델은 비선형 관계를 학습하는 XGBoost와
+결과를 계수로 설명하기 쉬운 Ridge 두 가지다.</p>
 <table>
 <thead>
 <tr>
 <th>역할</th>
 <th>모델</th>
 <th style="text-align: right;">2025 정확도</th>
-<th style="text-align: right;">균형 정확도</th>
-<th style="text-align: right;">Macro F1</th>
-<th style="text-align: right;">순서 MAE</th>
+<th style="text-align: right;">범주별 평균 정확도</th>
+<th style="text-align: right;">범주별 평균 F1</th>
+<th style="text-align: right;">범주 거리 오차</th>
 </tr>
 </thead>
 <tbody>
@@ -57,23 +57,31 @@ XGBoost는 32→10→3 단계 TPE 탐색으로 잠갔고, Ridge는 Ridge 계열 
 <p>두 모델은 497건 중 455건에서 같은 범주를 예측해 일치율 91.55%를 기록했다. 일치한
 등판의 정확도는 53.41%였다. 불일치 42건에서는 XGBoost가 33.33%, Ridge가 47.62%를
 맞혔다. 이 결과는 설명용 진단이며 2025를 보고 모델 설정이나 역할을 변경하지 않았다.</p>
-<p>실무적으로는 XGBoost의 비선형 예측과 Ridge의 해석을 함께 제공하되, 두 모델이 다르면
-불확실성 경고를 붙이는 방식이 적절하다. 현재 성능은 다음 등판의 세부 변동을 강하게
-예측하는 수준이 아니라, 최근 Stuff+ 상태를 EWMA로 안정화하고 작은 잔차 보정을 더하는
-수준으로 해석해야 한다.</p>
-<h2 id="section-1">2. 시간 분리와 채택 원칙</h2>
+<p>실무적으로는 XGBoost의 비선형 예측과 Ridge의 해석을 함께 제공하되, 두 모델의 예측 범주가
+다르면 불확실성이 높은 등판으로 표시하는 방식이 적절하다. 현재 성능은 다음 등판의 변화를
+정확히 맞히는 수준이라기보다, 최근 4경기에 더 큰 비중을 둔 Stuff+ 평균을 기본값으로 삼고
+물리·워크로드 피처로 조금 보정하는 수준이다.</p>
+<h3 id="metric-guide">결과표 읽는 법</h3>
+<ul>
+<li><strong>정확도</strong>: 전체 497등판 중 예측 범주를 정확히 맞힌 비율이다.</li>
+<li><strong>범주별 평균 정확도</strong>: Low·Middle·High 각각의 정답률을 동일한 비중으로 평균한 값이다. 표본이 많은 범주에만 잘 맞혀도 높아지는 문제를 줄인다.</li>
+<li><strong>범주별 평균 F1</strong>: 각 범주의 정밀도와 재현율을 함께 반영한 뒤 세 범주를 평균한 값이다.</li>
+<li><strong>범주 거리 오차</strong>: 정확하면 0, 한 단계 차이면 1, Low와 High처럼 두 단계 차이면 2다. <strong>낮을수록 좋다.</strong></li>
+<li><strong>최근 4경기 가중평균(EWMA4)</strong>: 최근 등판일수록 더 큰 비중을 주어 계산한 Stuff+ 평균이다.</li>
+</ul>
+<h2 id="section-1">2. 모델 선택과 최종 평가 방식</h2>
 <p>이번 실행은 다음 순서를 강제한다.</p>
 <ol>
 <li>모델 선택 함수에는 2024년 이하 데이터만 전달한다.</li>
 <li>2020~2021 학습 → 2022 검증을 수행한다.</li>
 <li>2020~2022 학습 → 2023 검증을 수행한다.</li>
 <li>2020~2023 학습 → 2024 검증을 수행한다.</li>
-<li>평균 균형 정확도에서 연도별 표준편차의 절반을 뺀 점수로 XGBoost를 확정한다.</li>
-<li>Ridge보다 평균 균형 정확도가 0.5%p 이상 높아야 XGBoost 주 모델 조건을 통과한다.</li>
+<li>연도별 범주 평균 정확도의 평균에서 변동성의 절반을 뺀 점수로 XGBoost를 확정한다.</li>
+<li>XGBoost가 Ridge보다 범주별 평균 정확도에서 0.5%p 이상 높아야 주 모델 조건을 통과한다.</li>
 <li>두 모델을 2020~2024년으로 재학습한 뒤 2025년에 적용한다.</li>
 </ol>
-<p>최종 XGBoost는 Ridge보다 검증 평균 균형 정확도가 0.517%p 높아 기준을 간신히 통과했다.
-두 모델의 하이퍼파라미터는 모두 2025 성능과 무관하게 정해졌다.</p>
+<p>최종 XGBoost는 Ridge보다 연도별 검증의 범주 평균 정확도가 0.517%p 높아 기준을 간신히
+통과했다. 두 모델의 세부 설정은 모두 2025년 결과를 보기 전에 정했다.</p>
 <h2 id="section-2">3. 데이터</h2>
 <h3 id="section-3">3.1 출처</h3>
 <table>
@@ -101,15 +109,15 @@ XGBoost는 32→10→3 단계 TPE 탐색으로 잠갔고, Ridge는 Ridge 계열 
 <p>2020년은 단축 시즌이므로 선수 자격 판정에는 사용하지 않고 추가 학습 이력으로만 사용했다.</p>
 <h3 id="section-4">3.2 분석 대상</h3>
 <p>2021~2025년의 모든 시즌에서 <code>공식 선발 + Statcast 50구 이상</code> 등판을 20회 이상 확보한
-19명을 대상으로 했다. 2025 등판 수는 테스트 모집단을 확정하는 데 사용하지만, 2025
-Stuff+는 후보 또는 하이퍼파라미터 선택에 사용하지 않았다.</p>
+19명을 대상으로 했다. 2025년 등판 수는 평가 선수를 정하는 데 사용했지만, 2025년
+Stuff+ 결과는 모델 종류나 세부 설정을 선택하는 데 사용하지 않았다.</p>
 <h3 id="section-5">3.3 시즌별 표본</h3>
 <table>
 <thead>
 <tr>
 <th style="text-align: right;">시즌</th>
 <th style="text-align: right;">50구 이상 선발</th>
-<th style="text-align: right;">완전사례</th>
+<th style="text-align: right;">결측값 없는 등판</th>
 <th style="text-align: right;">결측 제외</th>
 </tr>
 </thead>
@@ -152,18 +160,18 @@ Stuff+는 후보 또는 하이퍼파라미터 선택에 사용하지 않았다.<
 </tr>
 </tbody>
 </table>
-<p>입력 또는 타깃에 결측이 있는 행은 학습과 평가에서 제외했다. 두 채택 모델과 모든 기준선은
-동일한 2025년 497등판에서 비교했다.</p>
-<h2 id="section-6">4. 타깃</h2>
+<p>입력값 또는 예측할 범주에 결측이 있는 행은 학습과 평가에서 제외했다. 두 최종 모델과
+비교용 단순 예측은 동일한 2025년 497등판에서 비교했다.</p>
+<h2 id="section-6">4. 예측할 범주</h2>
 <p>각 투수의 학습 구간 Stuff+에서 33.3%와 66.7% 분위수를 계산했다.</p>
 <ul>
 <li>Low: Stuff+ ≤ 학습 구간 33.3% 분위수</li>
 <li>Middle: 두 분위수 사이</li>
 <li>High: Stuff+ &gt; 학습 구간 66.7% 분위수</li>
 </ul>
-<p>검증 폴드는 해당 검증연도 이전의 학습 자료만으로 경계값을 만든다. 최종 2025 테스트는
+<p>각 연도를 검증할 때는 그보다 이전 시즌의 학습 자료만으로 경계값을 만든다. 최종 2025 평가는
 2020~2024년 Stuff+만으로 선수별 경계값을 만든다.</p>
-<h2 id="section-7">5. 피처</h2>
+<h2 id="section-7">5. 모델에 넣은 정보</h2>
 <h3 id="section-8">5.1 공통 후보 28개</h3>
 <p>워크로드:</p>
 <ul>
@@ -177,7 +185,7 @@ Stuff+는 후보 또는 하이퍼파라미터 선택에 사용하지 않았다.<
 <li><code>stuff_plus_mean_last5</code></li>
 <li><code>stuff_plus_slope_last5</code></li>
 </ul>
-<p>물리 피처:</p>
+<p>투구 물리 정보:</p>
 <ul>
 <li><code>release_speed_ma5</code>, <code>release_speed_slope5</code></li>
 <li><code>release_spin_rate_ma5</code>, <code>release_spin_rate_slope5</code></li>
@@ -196,8 +204,8 @@ Stuff+는 후보 또는 하이퍼파라미터 선택에 사용하지 않았다.<
 </ul>
 <p>구종은 패스트볼·브레이킹볼·오프스피드로 묶었다. 합계 제약으로 인한 중복을 피하기 위해
 패스트볼 비중은 직접 입력하지 않았다.</p>
-<h3 id="compact-16">5.2 채택 모델의 compact 16개 피처</h3>
-<p>두 채택 모델은 동일한 compact 피처를 사용한다.</p>
+<h3 id="compact-16">5.2 최종 모델에 사용한 16개 입력 정보</h3>
+<p>두 최종 모델은 후보 28개 중 동일하게 선별한 16개 피처를 사용한다.</p>
 <ul>
 <li><code>prior_minus_ewma4</code></li>
 <li><code>mean5_minus_ewma4</code></li>
@@ -217,16 +225,16 @@ Stuff+는 후보 또는 하이퍼파라미터 선택에 사용하지 않았다.<
 <li><code>offspeed_share_slope5</code></li>
 </ul>
 <h2 id="section-9">6. 모델 구조</h2>
-<p>두 모델 모두 span 4 EWMA를 기본 예측값으로 두고 현재 Stuff+와 EWMA 사이의 잔차를
-예측한다.</p>
-<pre><code class="language-text">residual = current_stuff_plus - prior_EWMA4
-predicted_stuff = prior_EWMA4 + correction_scale × predicted_residual
+<p>두 모델 모두 최근 4경기 가중평균(EWMA4)을 다음 경기의 기본 예상값으로 둔다. 그다음
+물리·워크로드 피처로 실제 Stuff+가 이 기본값에서 얼마나 벗어날지를 예측한다.</p>
+<pre><code class="language-text">기본값과의 차이 = 현재 Stuff+ - 직전까지의 최근 4경기 가중평균
+최종 예상 Stuff+ = 최근 4경기 가중평균 + 보정 반영률 × 예상 차이
 </code></pre>
 <h3 id="xgboost">6.1 XGBoost</h3>
 <ul>
 <li>역할: 비선형 주 예측</li>
-<li>feature set: compact 16개</li>
-<li>EWMA span: 4</li>
+<li>입력 피처: 최종 선별 16개</li>
+<li>기본 예상값: 최근 4경기 가중평균</li>
 <li>trees: 100</li>
 <li>max depth: 2</li>
 <li>learning rate: 0.04221</li>
@@ -236,34 +244,35 @@ predicted_stuff = prior_EWMA4 + correction_scale × predicted_residual
 <li>gamma: 0</li>
 <li>subsample: 0.9997</li>
 <li>column sample: 0.5856</li>
-<li>correction scale: 0.5750</li>
+<li>모델 보정 반영률: 57.5%</li>
 <li>tree method: histogram, max bins 64</li>
 </ul>
 <h3 id="ridge">6.2 Ridge</h3>
 <ul>
 <li>역할: 해석 가능한 보조 예측</li>
-<li>feature set: compact 16개</li>
-<li>EWMA span: 4</li>
+<li>입력 피처: 최종 선별 16개</li>
+<li>기본 예상값: 최근 4경기 가중평균</li>
 <li>alpha: 100</li>
-<li>correction scale: 0.5</li>
+<li>모델 보정 반영률: 50%</li>
 <li>입력 피처: 투수별 학습 데이터에서 표준화</li>
 </ul>
-<p>Ridge의 alpha가 크고 잔차도 50%만 반영하므로 과격한 보정보다 EWMA4 주변의 보수적인
-선형 조정을 수행한다.</p>
-<h2 id="section-10">7. 검증 결과와 모델 채택</h2>
-<p>XGBoost는 다음 단계로 탐색했다.</p>
+<p>Ridge는 과적합을 막는 제약을 강하게 적용하고, 모델이 계산한 보정값도 50%만 반영한다.
+따라서 최근 4경기 가중평균에서 크게 벗어나지 않는 보수적인 예측을 만든다.</p>
+<h2 id="section-10">7. 연도별 검증 결과와 모델 선택</h2>
+<p>XGBoost의 세부 설정은 자동 탐색 방법(TPE)으로 다음과 같이 좁혔다.</p>
 <ol>
-<li>TPE 후보 32개를 2023년에 평가하고 상위 10개 유지</li>
+<li>자동으로 만든 설정 32개를 2023년에 평가하고 상위 10개 유지</li>
 <li>상위 10개를 2023~2024년에 평가하고 상위 3개 유지</li>
 <li>상위 3개를 2022~2024년에 평가</li>
-<li>최고 안정성 점수에서 0.3%p 이내면 더 단순한 설정 선택</li>
+<li>최고 점수와 0.3%p 이내로 비슷하면 과적합 위험이 낮은 더 단순한 설정 선택</li>
 </ol>
-<p>선택 점수는 <code>평균 균형 정확도 - 0.5 × 연도별 표준편차</code>다.</p>
-<section class="viz" aria-label="연도별 검증 균형 정확도 선 그래프">
-<p class="viz-title">연도별 검증 균형 정확도</p>
+<p>선택 점수는 <code>범주별 평균 정확도의 연도 평균 - 0.5 × 연도별 변동성</code>이다.
+여러 해에 걸쳐 성능이 높고 안정적인 설정을 고르기 위한 기준이다.</p>
+<section class="viz" aria-label="연도별 범주 평균 정확도 선 그래프">
+<p class="viz-title">연도별 범주 평균 정확도</p>
 <p class="viz-note">2025를 전혀 사용하지 않은 순차 검증. 세 모델 모두 연도 효과가 크지만 XGBoost가 가장 안정적이다.</p>
 <div class="legend"><span><i class="swatch" style="background:#174ea6"></i>XGBoost</span><span><i class="swatch" style="background:#e05a47"></i>Ridge</span><span><i class="swatch" style="background:#2f9e73"></i>EWMA4</span></div>
-<div class="chart-scroll"><svg class="line-chart" viewBox="0 0 820 320" role="img" aria-label="2022년부터 2024년까지 세 모델의 균형 정확도">
+<div class="chart-scroll"><svg class="line-chart" viewBox="0 0 820 320" role="img" aria-label="2022년부터 2024년까지 세 모델의 범주 평균 정확도">
 <line class="chart-grid" x1="90" y1="45" x2="780" y2="45"/><line class="chart-grid" x1="90" y1="105" x2="780" y2="105"/><line class="chart-grid" x1="90" y1="165" x2="780" y2="165"/><line class="chart-grid" x1="90" y1="225" x2="780" y2="225"/>
 <text class="chart-axis" x="42" y="49">56%</text><text class="chart-axis" x="42" y="109">54%</text><text class="chart-axis" x="42" y="169">52%</text><text class="chart-axis" x="42" y="229">50%</text>
 <text class="chart-label" x="128" y="275">2022</text><text class="chart-label" x="408" y="275">2023</text><text class="chart-label" x="688" y="275">2024</text>
@@ -315,18 +324,18 @@ predicted_stuff = prior_EWMA4 + correction_scale × predicted_residual
 </tr>
 </tbody>
 </table>
-<p>XGBoost의 Ridge 대비 평균 균형 정확도 우위는 0.517%p로 사전에 정한 0.5%p 조건을
-통과했다. 동일 seed로 전체 탐색을 두 번 실행했을 때 잠금 파라미터가 완전히 같았고,
+<p>XGBoost의 Ridge 대비 범주별 평균 정확도 우위는 0.517%p로 사전에 정한 0.5%p 조건을
+통과했다. 동일한 난수 기준으로 전체 탐색을 두 번 실행했을 때 최종 설정이 완전히 같았고,
 각 실행 시간은 약 29초였다.</p>
-<h2 id="section-11">8. 2025 테스트</h2>
+<h2 id="section-11">8. 2025 최종 성능평가</h2>
 <section class="viz" aria-label="2025 모델 성능 막대그래프">
-<p class="viz-title">2025 잠금 테스트 성능</p>
+<p class="viz-title">2025 최종 성능평가</p>
 <p class="viz-note">막대는 정확도 기준이며 축 범위는 0~60%. 숫자는 실제 정확도다.</p>
 <div class="bar-row"><span class="metric-label">Ridge</span><div class="bar-track"><div class="bar ridge" style="width:88.2%"></div></div><strong>52.92%</strong></div>
 <div class="bar-row"><span class="metric-label">EWMA4</span><div class="bar-track"><div class="bar ewma" style="width:87.2%"></div></div><strong>52.31%</strong></div>
 <div class="bar-row"><span class="metric-label">XGBoost</span><div class="bar-track"><div class="bar" style="width:86.2%"></div></div><strong>51.71%</strong></div>
 <div class="bar-row"><span class="metric-label">직전 Stuff+</span><div class="bar-track"><div class="bar last" style="width:83.2%"></div></div><strong>49.90%</strong></div>
-<div class="bar-row"><span class="metric-label">최빈 범주</span><div class="bar-track"><div class="bar mode" style="width:71.4%"></div></div><strong>42.86%</strong></div>
+<div class="bar-row"><span class="metric-label">가장 잦은 범주</span><div class="bar-track"><div class="bar mode" style="width:71.4%"></div></div><strong>42.86%</strong></div>
 <div class="axis"><span>0%</span><span>30%</span><span>60%</span></div>
 <p class="takeaway"><strong>핵심:</strong> Ridge, EWMA4, XGBoost의 차이는 1.21%p 이내다. 복잡한 모델의 개선 폭보다 과거 Stuff+ 지속성 자체의 기여가 더 크다.</p>
 </section>
@@ -334,11 +343,11 @@ predicted_stuff = prior_EWMA4 + correction_scale × predicted_residual
 <thead>
 <tr>
 <th>모델</th>
-<th style="text-align: right;">N</th>
+<th style="text-align: right;">평가 등판</th>
 <th style="text-align: right;">정확도</th>
-<th style="text-align: right;">균형 정확도</th>
-<th style="text-align: right;">Macro F1</th>
-<th style="text-align: right;">순서 MAE</th>
+<th style="text-align: right;">범주별 평균 정확도</th>
+<th style="text-align: right;">범주별 평균 F1</th>
+<th style="text-align: right;">범주 거리 오차</th>
 </tr>
 </thead>
 <tbody>
@@ -375,7 +384,7 @@ predicted_stuff = prior_EWMA4 + correction_scale × predicted_residual
 <td style="text-align: right;">0.610</td>
 </tr>
 <tr>
-<td>학습 최빈 범주</td>
+<td>학습기간에서 가장 많았던 범주</td>
 <td style="text-align: right;">497</td>
 <td style="text-align: right;">42.86%</td>
 <td style="text-align: right;">33.33%</td>
@@ -385,8 +394,8 @@ predicted_stuff = prior_EWMA4 + correction_scale × predicted_residual
 </tbody>
 </table>
 <p>Ridge가 XGBoost보다 6건 더 맞혔고 EWMA4보다는 3건 더 맞혔다. 최적화 XGBoost는 기존
-고정 XGBoost보다 4건을 추가로 맞혔다. 테스트 결과는 두 모델의
-설명과 비교에 사용하되, 이 결과를 근거로 하이퍼파라미터를 변경하지 않았다.</p>
+고정 XGBoost보다 4건을 추가로 맞혔다. 2025년 결과는 두 모델의 설명과 비교에만 사용했으며,
+이 결과를 근거로 모델 설정을 다시 바꾸지 않았다.</p>
 <h3 id="xgboost-1">8.1 XGBoost 혼동행렬</h3>
 <section class="viz" aria-label="두 모델 혼동행렬 히트맵">
 <p class="viz-title">범주별 예측 분포</p>
@@ -653,15 +662,16 @@ predicted_stuff = prior_EWMA4 + correction_scale × predicted_residual
 <p>선수별 편차가 매우 크다. 상위 선수에서는 한 시즌의 범주가 특정 상태에 오래 머문 반면,
 하위 선수에서는 2025 분포 변화와 경기별 변동을 두 모델 모두 충분히 설명하지 못했다.
 따라서 전체 정확도를 모든 투수에게 동일하게 적용되는 품질로 해석하면 안 된다.</p>
-<h2 id="ridge-2">11. Ridge 전역 해석</h2>
-<p>Ridge 계수는 각 투수의 학습 데이터에서 표준화된 피처에 대한 잔차 보정 계수이며, 최종
-반영률 0.5까지 적용한 값이다. 절댓값 중앙값이 큰 피처는 다음과 같다.</p>
+<h2 id="ridge-2">11. Ridge가 중요하게 본 입력 정보</h2>
+<p>아래 값은 각 입력 정보가 기본 예상값을 어느 방향으로 얼마나 보정했는지를 나타낸다.
+선수마다 단위가 다른 문제를 줄이기 위해 각 투수의 학습 데이터 안에서 입력값의 척도를
+맞췄으며, 표에는 19명 계수의 중앙값을 제시했다.</p>
 <table>
 <thead>
 <tr>
-<th>피처</th>
+<th>입력 정보</th>
 <th style="text-align: right;">계수 중앙값</th>
-<th style="text-align: right;">절댓값 중앙값</th>
+<th style="text-align: right;">영향 크기 중앙값</th>
 <th style="text-align: right;">양수 선수 비율</th>
 <th>해석</th>
 </tr>
@@ -672,7 +682,7 @@ predicted_stuff = prior_EWMA4 + correction_scale × predicted_residual
 <td style="text-align: right;">-0.189</td>
 <td style="text-align: right;">0.189</td>
 <td style="text-align: right;">0.0%</td>
-<td>최근 상승·하락 추세의 평균회귀 보정</td>
+<td>최근 상승 뒤 낮아지고 하락 뒤 높아지는 방향으로 보정</td>
 </tr>
 <tr>
 <td><code>prior_minus_ewma4</code></td>
@@ -718,21 +728,22 @@ predicted_stuff = prior_EWMA4 + correction_scale × predicted_residual
 </tr>
 </tbody>
 </table>
-<p>가장 일관된 신호는 Stuff+ 자체의 평균회귀다. <code>stuff_plus_slope_last5</code>는 19명 모두 음수였고,
+<p>가장 일관된 신호는 최근 크게 오르거나 내린 Stuff+가 다시 평소 수준으로 돌아오는 경향이다.
+<code>stuff_plus_slope_last5</code>는 19명 모두 음수였고,
 <code>mean5_minus_ewma4</code>는 19명 중 18명에서 양수였다. 반면 회전수·암 슬롯·구속 변화는 절댓값이
 커도 부호가 엇갈리므로 전 리그에 동일한 인과 방향이 있다고 해석하면 안 된다.</p>
 <h2 id="section-14">12. 한계</h2>
 <ol>
-<li>2025 한 시즌만 시간 외 테스트로 사용했다.</li>
+<li>최종 성능평가가 2025년 한 시즌에만 이루어졌다.</li>
 <li>투수별 모델이라 각 모델의 학습 표본이 작다.</li>
-<li>완전사례 정책으로 2025년 560등판 중 63등판을 제외했다.</li>
-<li>2021~2025 매년 20선발을 충족한 생존자 표본이다.</li>
-<li>2025 등판 수로 테스트 모집단을 사후 확정했다.</li>
-<li>새 코드에서는 2025를 선택 함수에서 차단했지만 연구자가 이전 탐색에서 2025를 본 사실은
-소급해 제거할 수 없다.</li>
-<li>Ridge를 보조 모델로 함께 채택하는 결정은 첫 XGBoost 테스트 확인 이후 이루어졌다.
-Ridge 설정 자체는 초기 2023·2024 검증만으로 자동 확정했지만, Ridge의 2025 성능은 보조적
-기술 결과로 해석하는 것이 안전하다.</li>
+<li>입력값이나 정답에 결측이 있는 2025년 63등판을 제외했다.</li>
+<li>2021~2025년 매년 20회 이상 선발한 투수만 포함했으므로 부상·보직 변경이 있었던 투수에게 같은 성능을 기대하기 어렵다.</li>
+<li>2025년 선발 등판 수까지 확인해 평가 선수를 정했기 때문에 표본 선택 편향이 있을 수 있다.</li>
+<li>최종 코드는 2025년 결과를 모델 선택에 사용하지 않지만, 연구자가 초기 탐색 과정에서
+2025년 결과를 확인했던 사실은 되돌릴 수 없다.</li>
+<li>Ridge를 보조 모델로 함께 제시하기로 한 결정은 첫 XGBoost 최종 평가 이후 이루어졌다.
+Ridge 설정 자체는 2023·2024년 검증만으로 정했지만, Ridge의 2025년 성능은 보조 결과로
+해석하는 것이 안전하다.</li>
 </ol>
 <h2 id="section-15">13. 재현 방법</h2>
 <pre><code class="language-powershell">.\.venv\Scripts\python.exe search_xgboost_fast.py `
@@ -772,7 +783,7 @@ Ridge 설정 자체는 초기 2023·2024 검증만으로 자동 확정했지만,
 </tr>
 <tr>
 <td><code>locked_xgboost_2025_predictions.parquet</code></td>
-<td>잠금 XGBoost의 2025 예측</td>
+<td>최종 XGBoost의 2025 예측</td>
 </tr>
 <tr>
 <td><code>tuned_xgboost_vs_ridge_2025.parquet</code></td>
@@ -822,13 +833,14 @@ Ridge 설정 자체는 초기 2023·2024 검증만으로 자동 확정했지만,
 </table>
 <h2 id="section-16">14. 결론</h2>
 <p>XGBoost와 Ridge는 2025 이전 검증만으로 설정을 확정했다. 최적화 XGBoost는 Ridge보다
-검증 평균 균형 정확도가 0.517%p 높아 주 모델 조건을 통과했다. 2025에서는 Ridge가
+검증의 범주별 평균 정확도가 0.517%p 높아 주 모델 조건을 통과했다. 2025년에는 Ridge가
 정확도 52.92%로 XGBoost의 51.71%보다 높았고, 두 모델은 91.55%의 등판에서 같은 범주를
 냈다. 따라서 XGBoost의 비선형 예측과 Ridge의 안정적·해석 가능한
-보조 예측을 함께 제공한다. 다음 시즌에는 두 모델과 일치 규칙을 변경하지 않은 상태로
-전향 평가해야 한다.</p>
-<p>최종적으로 이 모델의 실질적인 기반은 과거 Stuff+의 지속성을 반영한 EWMA4다. XGBoost와
-Ridge는 그 주변의 잔차만 보정하며, 2025에서 가장 좋은 Ridge도 EWMA4보다 3경기를 더
-맞힌 수준이다. 그러므로 복잡한 모델 자체보다 시간 분리, 강한 규제, 이중 모델 일치 표시,
-선수별 성능 편차를 함께 관리하는 것이 더 중요하다.</p>
+보조 예측을 함께 제공한다. 다음 시즌에는 설정을 다시 손대지 않고 실제 새 등판에 적용해
+성능이 유지되는지 확인해야 한다.</p>
+<p>최종적으로 이 모델의 실질적인 기반은 최근 Stuff+ 흐름을 반영한 4경기 가중평균이다.
+XGBoost와 Ridge는 이 기본 예상값을 조금 조정하며, 2025년에서 가장 좋은 Ridge도
+4경기 가중평균만 사용했을 때보다 3경기를 더 맞힌 정도다. 그러므로 복잡한 모델 자체보다
+모델 선택 자료와 최종 평가 자료를 분리하고, 과적합을 강하게 억제하며, 두 모델의 일치 여부와
+선수별 성능 편차를 함께 보여주는 것이 더 중요하다.</p>
 </main></body></html>
